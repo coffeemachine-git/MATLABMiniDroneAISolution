@@ -1,0 +1,495 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:pStyle w:val="code"/></w:pPr><w:r><w:t><![CDATA[classdef drone_track_builder < matlab.apps.AppBase
+
+	% Properties that correspond to app components
+	properties (Access = public)
+		CompetitionTrackBuilderUIFigure  matlab.ui.Figure
+		HelpButton                      matlab.ui.control.Button
+		SaveWaypointsButton             matlab.ui.control.Button
+		LoadWaypointsButton             matlab.ui.control.Button
+		UpdateVirtualWorldButton        matlab.ui.control.Button
+		WaypointsPanel                  matlab.ui.container.Panel
+		UITable                         matlab.ui.control.Table
+		ShowLandingMarkerButton         matlab.ui.control.StateButton
+		HexcolorcodeoftrackRRGGBBPanel  matlab.ui.container.Panel
+		Label_2                         matlab.ui.control.Label
+		EditField                       matlab.ui.control.EditField
+		Label                           matlab.ui.control.Label
+		ClearButton                     matlab.ui.control.Button
+		GenerateGroundPatternButton     matlab.ui.control.Button
+		UIAxes                          matlab.ui.control.UIAxes
+	end
+
+
+    properties (Access = private)
+        Ptiles % pattern tiles
+        Wtiles % wapoint tiles
+        wp % waipotins
+        ph_wp % patch handlers for waypoints
+        ph_ptrn; % patch handlers for paterns
+        ph_ca % patch handler for clickable area
+        land_coord % landing coordinates
+        mh_land %landing handler
+        path_color = [1 0 0]; % path color
+        W=4;
+        H=4;
+        XYtable;
+
+    end
+
+    methods (Access = private)
+
+		function drawPatch(app)
+			w = app.W; % Width for UE4 range
+			h = app.H; % Height for UE4 range
+			if ~isempty(app.ph_ca)
+				delete(app.ph_ca);
+				app.ph_ca = [];
+			end
+			app.ph_ca = patch(app.UIAxes, [0 w w 0], [0 0 h h], [1 1 1], 'EdgeColor', 'none');
+			alpha(app.ph_ca, 0);
+			app.UIAxes.ButtonDownFcn = @(src, event) app.axClicked(event);
+			hold(app.UIAxes, "on");
+			app.UIAxes.XLim = [0 w];
+			app.UIAxes.YLim = [0 h];
+			xlabel(app.UIAxes, 'X (UE4) [m]');
+			ylabel(app.UIAxes, 'Y (UE4) [m]');
+			title(app.UIAxes, 'UE4 Coordinate System');
+		end
+
+		function axClicked(app, event)
+			loc = event.IntersectionPoint;
+			ue4Loc = loc(1:2); % Directly use the clicked location
+			app.wp = [app.wp; ue4Loc];
+			app.UITable.Data = app.wp(:, 1:2);
+			drawWaypoints(app);
+			drawPatch(app);
+		end
+
+		function drawWaypoints(app)
+			if size(app.wp, 1) > 1
+				delete(app.ph_wp)
+				app.ph_wp = [];
+				delete(app.mh_land);
+				app.mh_land = [];
+				[app.Wtiles, app.land_coord] = line_patches(app, app.wp, 0.1);
+				for ii = 1:length(app.Wtiles)
+					app.ph_wp(ii) = patch(app.UIAxes, app.Wtiles(ii).x, app.Wtiles(ii).y, app.path_color, 'EdgeColor', 'none');
+				end
+				val = app.ShowLandingMarkerButton.Value;
+				if val == 0
+					app.mh_land = plot(app.UIAxes, app.land_coord(:, 1), app.land_coord(:, 2), 'o', 'MarkerSize', 18, 'MarkerFaceColor', app.path_color, 'MarkerEdgeColor', 'none');
+				else
+					delete(app.mh_land);
+					app.mh_land = [];
+				end
+			end
+		end
+
+        function rgb = hex2rgb(app,hexString)
+            if size(hexString,2)~=6
+                uialert(app.CompetitionTrackBuilderUIFigure,'Valid hexadecimal color code must contain 6 characters','Error');
+                rgb=app.path_color;
+            else
+                try
+                    r = double(hex2dec(hexString(1:2)))/255;
+                    g = double(hex2dec(hexString(3:4)))/255;
+                    b = double(hex2dec(hexString(5:6)))/255;
+                    rgb = [r, g, b];
+                catch ME
+                    uialert(app.CompetitionTrackBuilderUIFigure, ME.message ,'Error');
+                    rgb = app.path_color;
+                    app.EditField.Value = rgb2hex(app);
+                end
+                app.path_color = rgb;
+            end
+        end
+
+        function hexVal = rgb2hex(app)
+            rgb = app.path_color;
+            rgb_norm = rgb*255;
+            hexValString = dec2hex(rgb_norm);
+            hexVal = reshape(hexValString', 1, 6);
+        end
+
+        function [tiles,land] = line_patches(~,points,w)
+            % extend coordinates
+            ext_points=[];
+            for jj=1:size(points,1)-1
+                pt1=points(jj,1:2);
+                pt2=points(jj+1,1:2);
+                ext1=pt2-pt1;
+                ext2=pt1-pt2;
+                [theta1,~] = cart2pol(ext1(1),ext1(2));
+                [theta2,~] = cart2pol(ext2(1),ext2(2));
+                [x1,y1]=pol2cart(theta1,-(w/2));
+                [x2,y2]=pol2cart(theta2,+(w/2));
+                ext_points=[ext_points; pt1+[x1 y1]; pt2-[x2 y2]];
+            end
+            % calculate patch coordinate
+            idx=1;
+            for ii=1:2:size(ext_points,1)-1
+                sub=ext_points(ii:ii+1,1:2);
+                data_tan=diff(sub);
+                data_tan = data_tan./sqrt(sum(data_tan.^2,2));
+                data_norm = data_tan*[0 -1;1 0];
+                delta = w/2;
+                data_offset = data_norm*delta;
+                data_offset(end+1,:) = data_offset(end,:);
+                data_new = sub + data_offset;
+                data_new2 = sub - data_offset;
+                tiles(idx).x= [data_new2(1,1) data_new2(2,1) data_new(2,1) data_new(1,1)];
+                tiles(idx).y= [data_new2(1,2) data_new2(2,2) data_new(2,2) data_new(1,2)];
+                idx=idx+1;
+            end
+            % calculate landing center
+            pt1=ext_points(end-1,1:2);
+            pt2=ext_points(end,1:2);
+            ext2=pt1-pt2;
+            [theta2,~] = cart2pol(ext2(1),ext2(2));
+            land_dist = 0.25; % landing distance
+            [x2,y2]=pol2cart(theta2,land_dist);
+            land=pt2-[x2 y2];
+        end
+
+        function tiles = pattern_patches(~,w,h,tsize,th,tw,rnd_ok,rnd_per)
+            count=1;
+            per=(rnd_per/100);
+            for ii = 1:1:ceil(w/tsize)
+                for jj = 1:1:ceil(h/tsize)
+                    if rnd_ok==1
+                        th_new=tsize*(0.2+(per-0.2)*rand);
+                        tw_new=tsize*(0.2+(per-0.2)*rand);
+                    else
+                        th_new = th;
+                        tw_new = tw;
+                    end
+                    alpha = atan(tw_new/th_new);
+                    angle = 2*pi*rand();
+                    angle_vec = [angle-alpha angle+alpha angle-alpha+pi angle+alpha+pi];
+                    tiles(count).x = ((ii-1)*tsize)+ tsize/2 + th_new/2.*cos(angle_vec);
+                    tiles(count).y = ((jj-1)*tsize)+ tsize/2 + th_new/2.*sin(angle_vec);
+                    count=count+1;
+                end
+            end
+		end
+    end
+    methods (Access = public)
+    end
+
+
+	% Callbacks that handle component events
+	methods (Access = private)
+
+		% Code that executes after component creation
+		function startupFcn(app)
+			app.UIAxes.Toolbar.Visible = 'off';
+			disableDefaultInteractivity(app.UIAxes);
+			cla(app.UIAxes);
+			app.UIAxes.XLim = [0 app.W]; % Set X axis limit for UE4 range
+			app.UIAxes.YLim = [0 app.H]; % Set Y axis limit for UE4 range
+			xlabel(app.UIAxes, 'X (UE4)');
+			ylabel(app.UIAxes, 'Y (UE4)');
+			title(app.UIAxes, 'UE4 Coordinate System');
+			drawPatch(app);
+		end
+
+		% Button pushed function: GenerateGroundPatternButton
+		function GenerateGroundPatternButtonPushed(app, event)
+            cla(app.UIAxes);
+            app.ph_wp=[];
+            app.ph_ptrn=[];
+            w=app.W;
+            h=app.H;
+            app.UIAxes.XLim = [0 w];
+            app.UIAxes.YLim = [0 h];
+            app.Ptiles = pattern_patches(app,w,h,0.25,0.15,0.05,0,50);
+            for ii=1:length(app.Ptiles)
+                app.ph_ptrn(ii)=patch(app.UIAxes,app.Ptiles(ii).x,app.Ptiles(ii).y,[0.8 0.8 0.8]);
+            end
+            hold(app.UIAxes,'on')
+
+            drawWaypoints(app);
+            drawPatch(app);
+		end
+
+		% Button pushed function: ClearButton
+		function ClearButtonPushed(app, event)
+            app.wp = [];
+            delete(app.ph_wp(:));
+            app.ph_wp=[];
+            delete(app.ph_ptrn(:));
+            app.ph_ptrn=[];
+            delete(app.mh_land);
+            app.mh_land=[];
+            app.Wtiles = [];
+            app.Ptiles = [];
+            app.land_coord=[];
+            app.UITable.Data = app.wp;
+		end
+
+		% Value changed function: ShowLandingMarkerButton
+		function ShowLandingMarkerButtonValueChanged(app, event)
+            value = app.ShowLandingMarkerButton.Value;
+            if value==1
+                app.ShowLandingMarkerButton.BackgroundColor='red';
+            else
+                app.ShowLandingMarkerButton.BackgroundColor='green';
+            end
+            drawWaypoints(app)
+		end
+
+		% Cell edit callback: UITable
+		function UITableCellEdit(app, event)
+            indices = event.Indices;
+            newData = event.NewData;
+            if ~isnan(newData)
+                if ((newData < 0) || (newData > 4))
+                    uialert(app.CompetitionTrackBuilderUIFigure,...
+                        'Coordinates specified for the waypoint are outside boundary. Specify a value between 0 and 4.','Warning','Icon','warning');
+                else
+                    app.wp(indices(1),indices(2))=newData;
+                end
+            end
+            app.UITable.Data = app.wp(:,1:2);
+            drawWaypoints(app);
+            figure(app.CompetitionTrackBuilderUIFigure);
+		end
+
+		% Callback function
+		function Rnd_okValueChanged(app, event)
+            value = app.Rnd_ok.Value;
+            if value==1
+                app.Rnd_perc.Enable = true;
+                app.StripW.Enable = false;
+                app.StripH.Enable = false;
+            else
+                app.Rnd_perc.Enable = false;
+                app.StripW.Enable = true;
+                app.StripH.Enable = true;
+            end
+            drawWaypoints(app);
+		end
+
+		% Button pushed function: UpdateVirtualWorldButton
+		function UpdateVirtualWorldButtonPushed(app, event)
+            % Initialize the data structure
+			initData = struct('Lines', struct('StartX', {}, 'StartY', {}, 'EndX', {}, 'EndY', {}), 'Circle', [], 'Color', [], 'posNED',[]);
+
+			% % Example input data (replace with actual app data)
+			% app.land_coord = [1, 1]; % Example landing coordinate
+			% app.wp = [2, 2; 3, 3; 4, 4; 5, 5; 6, 6]; % Example waypoints
+			% app.path_color = [1, 0, 0]; % Red color
+			
+            initNew = evalin('base','init');
+            if size(app.wp,1)>=2
+                initNew.posNED = [app.wp(1,2) app.wp(1,1) -0.046];
+            else
+                initNew.posNED = [0 0 -0.046];
+			end
+
+			assignin('base', 'init', initNew);
+			initData.posNED = initNew.posNED;
+
+			initData.Color = app.path_color;
+			numLines = size(app.wp, 1);
+			% Iterate over the waypoints and convert NED coordinates to UE4 coordinates
+			for i = 1:numLines-1
+				ue4Start = [app.wp(i, 1:2)];
+                ue4End = [app.wp(i+1, 1:2)];
+				initData.Lines(end+1) = struct('StartX', ue4Start(2), 'StartY', ue4Start(1), 'EndX', ue4End(2), 'EndY', ue4End(1));
+			end
+
+			% Convert and store circle coordinates (example)
+			if(length(app.land_coord)>1)
+			circ = app.land_coord;
+			initData.Circle = struct('X', circ(2), 'Y', circ(1), 'Z', 0.01, 'Diameter', 0.2);
+
+			% Save the data to a .mat file
+			save('initData.mat', '-struct', 'initData');
+			end
+		end
+
+		% Value changed function: EditField
+		function EditFieldValueChanged(app, event)
+            value = app.EditField.Value;
+            app.path_color = hex2rgb(app,value);
+            app.Label.BackgroundColor = app.path_color;
+            drawWaypoints(app);
+		end
+
+		% Button pushed function: LoadWaypointsButton
+		function LoadWaypointsButtonPushed(app, event)
+            try
+                [file,path] = uigetfile('*.csv');
+                if file~=0
+                    t=readmatrix([path file],'NumHeaderLines',0);
+                    if isempty(find(ismissing(t))) && ~isempty(t)                        app.wp=[];
+                        app.wp=t(:,1:2);
+                        app.UITable.Data = app.wp;
+                        drawWaypoints(app);
+                    else
+                        uialert(app.DroneTrackBuilderUIFigure,'Data in the file is corrupt or invalid.','Error');
+                    end
+                end
+                figure(app.CompetitionTrackBuilderUIFigure);
+            catch E
+                uialert(app.CompetitionTrackBuilderUIFigure,'Unable to read data file.','Error');
+            end
+            figure(app.CompetitionTrackBuilderUIFigure);
+		end
+
+		% Button pushed function: SaveWaypointsButton
+		function SaveWaypointsButtonPushed(app, event)
+            if size(app.wp,1)>0
+                [file,path] = uiputfile('waypoints.csv');
+                if file~=0
+                    t=array2table(app.wp,'VariableNames',{'East','North'});
+                    writetable(t,[path file],'WriteVariableNames',false);
+                end
+            else
+                uialert(app.CompetitionTrackBuilderUIFigure,'No waypoints are available to save. Add waypoints by drawing the track.','Waypoints Error!');
+            end
+            figure(app.CompetitionTrackBuilderUIFigure);
+		end
+
+		% Button pushed function: HelpButton
+		function HelpButtonPushed(app, event)
+            codertarget.internal.helpView('parrot','parrottrackbuilder');
+		end
+	end
+
+	% Component initialization
+	methods (Access = private)
+
+		% Create UIFigure and components
+		function createComponents(app)
+
+			% Create CompetitionTrackBuilderUIFigure and hide until all components are created
+			app.CompetitionTrackBuilderUIFigure = uifigure('Visible', 'off');
+			app.CompetitionTrackBuilderUIFigure.Position = [100 100 908 535];
+			app.CompetitionTrackBuilderUIFigure.Name = 'Competition Track Builder';
+
+			% Create UIAxes
+			app.UIAxes = uiaxes(app.CompetitionTrackBuilderUIFigure);
+			xlabel(app.UIAxes, 'X (UE4) [m]')
+			ylabel(app.UIAxes, 'Y (UE4) [m]')
+			app.UIAxes.Toolbar.Visible = 'off';
+			app.UIAxes.XLimMode = 'manual';
+			app.UIAxes.XColor = [0 0 0];
+			app.UIAxes.XTickLabelRotationMode = 'manual';
+			app.UIAxes.YTickLabelRotationMode = 'manual';
+			app.UIAxes.ZTickLabelRotationMode = 'manual';
+			app.UIAxes.Position = [396 99 485 414];
+
+			% Create GenerateGroundPatternButton
+			app.GenerateGroundPatternButton = uibutton(app.CompetitionTrackBuilderUIFigure, 'push');
+			app.GenerateGroundPatternButton.ButtonPushedFcn = createCallbackFcn(app, @GenerateGroundPatternButtonPushed, true);
+			app.GenerateGroundPatternButton.Position = [413 29 103 36];
+			app.GenerateGroundPatternButton.Text = {'Generate'; 'Ground Pattern'};
+
+			% Create ClearButton
+			app.ClearButton = uibutton(app.CompetitionTrackBuilderUIFigure, 'push');
+			app.ClearButton.ButtonPushedFcn = createCallbackFcn(app, @ClearButtonPushed, true);
+			app.ClearButton.Position = [650 29 103 36];
+			app.ClearButton.Text = 'Clear';
+
+			% Create HexcolorcodeoftrackRRGGBBPanel
+			app.HexcolorcodeoftrackRRGGBBPanel = uipanel(app.CompetitionTrackBuilderUIFigure);
+			app.HexcolorcodeoftrackRRGGBBPanel.Title = 'Hex color code of track (#RRGGBB)';
+			app.HexcolorcodeoftrackRRGGBBPanel.Position = [32 458 321 61];
+
+			% Create Label
+			app.Label = uilabel(app.HexcolorcodeoftrackRRGGBBPanel);
+			app.Label.BackgroundColor = [1 0 0];
+			app.Label.Position = [146 10 138 22];
+			app.Label.Text = '';
+
+			% Create EditField
+			app.EditField = uieditfield(app.HexcolorcodeoftrackRRGGBBPanel, 'text');
+			app.EditField.ValueChangedFcn = createCallbackFcn(app, @EditFieldValueChanged, true);
+			app.EditField.Position = [21 10 116 22];
+			app.EditField.Value = '800080';
+
+			% Create Label_2
+			app.Label_2 = uilabel(app.HexcolorcodeoftrackRRGGBBPanel);
+			app.Label_2.Position = [9 10 25 22];
+			app.Label_2.Text = '#';
+
+			% Create ShowLandingMarkerButton
+			app.ShowLandingMarkerButton = uibutton(app.CompetitionTrackBuilderUIFigure, 'state');
+			app.ShowLandingMarkerButton.ValueChangedFcn = createCallbackFcn(app, @ShowLandingMarkerButtonValueChanged, true);
+			app.ShowLandingMarkerButton.Text = {'Show'; 'Landing Marker'};
+			app.ShowLandingMarkerButton.BackgroundColor = [0 1 0];
+			app.ShowLandingMarkerButton.Position = [534 29 103 36];
+
+			% Create WaypointsPanel
+			app.WaypointsPanel = uipanel(app.CompetitionTrackBuilderUIFigure);
+			app.WaypointsPanel.Title = 'Waypoints';
+			app.WaypointsPanel.Position = [32 99 320 344];
+
+			% Create UITable
+			app.UITable = uitable(app.WaypointsPanel);
+			app.UITable.ColumnName = {'East'; 'North'};
+			app.UITable.RowName = {};
+			app.UITable.ColumnEditable = true;
+			app.UITable.CellEditCallback = createCallbackFcn(app, @UITableCellEdit, true);
+			app.UITable.Position = [17 16 288 295];
+
+			% Create UpdateVirtualWorldButton
+			app.UpdateVirtualWorldButton = uibutton(app.CompetitionTrackBuilderUIFigure, 'push');
+			app.UpdateVirtualWorldButton.ButtonPushedFcn = createCallbackFcn(app, @UpdateVirtualWorldButtonPushed, true);
+			app.UpdateVirtualWorldButton.BackgroundColor = [0.9608 0.9608 0.9608];
+			app.UpdateVirtualWorldButton.Position = [770 29 103 36];
+			app.UpdateVirtualWorldButton.Text = {'Update Virtual'; 'World'};
+
+			% Create LoadWaypointsButton
+			app.LoadWaypointsButton = uibutton(app.CompetitionTrackBuilderUIFigure, 'push');
+			app.LoadWaypointsButton.ButtonPushedFcn = createCallbackFcn(app, @LoadWaypointsButtonPushed, true);
+			app.LoadWaypointsButton.Position = [32 29 147 36];
+			app.LoadWaypointsButton.Text = 'Load Waypoints';
+
+			% Create SaveWaypointsButton
+			app.SaveWaypointsButton = uibutton(app.CompetitionTrackBuilderUIFigure, 'push');
+			app.SaveWaypointsButton.ButtonPushedFcn = createCallbackFcn(app, @SaveWaypointsButtonPushed, true);
+			app.SaveWaypointsButton.Position = [205 29 147 36];
+			app.SaveWaypointsButton.Text = 'Save Waypoints';
+
+			% Create HelpButton
+			app.HelpButton = uibutton(app.CompetitionTrackBuilderUIFigure, 'push');
+			app.HelpButton.ButtonPushedFcn = createCallbackFcn(app, @HelpButtonPushed, true);
+			app.HelpButton.Position = [825 506 48 22];
+			app.HelpButton.Text = 'Help';
+
+			% Show the figure after all components are created
+			app.CompetitionTrackBuilderUIFigure.Visible = 'on';
+		end
+	end
+
+	% App creation and deletion
+	methods (Access = public)
+
+		% Construct app
+		function app = drone_track_builder
+
+			% Create UIFigure and components
+			createComponents(app)
+
+			% Register the app with App Designer
+			registerApp(app, app.CompetitionTrackBuilderUIFigure)
+
+			% Execute the startup function
+			runStartupFcn(app, @startupFcn)
+
+			if nargout == 0
+				clear app
+			end
+		end
+
+		% Code that executes before app deletion
+		function delete(app)
+
+			% Delete UIFigure when app is deleted
+			delete(app.CompetitionTrackBuilderUIFigure)
+		end
+	end
+end]]></w:t></w:r></w:p></w:body></w:document>
